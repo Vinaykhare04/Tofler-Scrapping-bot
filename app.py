@@ -1,11 +1,54 @@
 import os
 import re
 import time
+import subprocess
+import sys
 import pandas as pd
 import streamlit as st
 from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
 from openpyxl import load_workbook
+
+# --- PLAYWRIGHT BROWSER INITIALIZATION ---
+@st.cache_resource
+def ensure_browsers_installed():
+    """Install Playwright browsers on first run (Streamlit Cloud compatible)"""
+    try:
+        # Check common Playwright installation paths
+        browser_paths = [
+            os.path.expanduser("~/.cache/ms-playwright"),  # Linux
+            os.path.expanduser("~/AppData/Local/ms-playwright"),  # Windows
+        ]
+        
+        browsers_exist = any(os.path.exists(path) for path in browser_paths)
+        
+        if not browsers_exist:
+            print("[INIT] Playwright browsers not found. Installing...")
+            result = subprocess.run(
+                [sys.executable, "-m", "playwright", "install", "chromium"],
+                capture_output=True,
+                text=True,
+                timeout=300
+            )
+            
+            if result.returncode == 0:
+                print("[INIT] ✅ Playwright browsers installed successfully!")
+                return True
+            else:
+                print(f"[INIT] ❌ Installation failed: {result.stderr}")
+                st.warning("⚠️ Playwright browser installation in progress. Please refresh the page in a moment.")
+                return False
+        else:
+            print("[INIT] ✅ Playwright browsers already installed")
+            return True
+            
+    except Exception as e:
+        print(f"[INIT] ERROR: {e}")
+        st.warning(f"⚠️ Browser initialization: {str(e)}")
+        return False
+
+# Ensure browsers are installed before app runs
+ensure_browsers_installed()
 
 # --- STYLING CONFIGURATIONS ---
 st.set_page_config(page_title="Tofler Intelligence Scraper & Parser Dashboard", layout="wide")
