@@ -130,15 +130,28 @@ def run_selenium_scraper(email, password, companies):
     options.add_argument("--headless")
     options.add_argument("--start-maximized")
     options.add_argument("--disable-notifications")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    
+    # Docker optimization: point to system chromium binary
+    if os.path.exists("/usr/bin/chromium"):
+        options.binary_location = "/usr/bin/chromium"
 
     status_box = st.empty()
     progress_bar = st.progress(0)
 
     driver = None
     try:
-        print("[SCRAPER] Installing ChromeDriver...")
-        status_box.info("🚀 Initiating Chrome Driver automation connection pipeline...")
-        driver = webdriver.Chrome(service=ChromeService(ChromeDriverManager().install()), options=options)
+        print("[SCRAPER] Initializing ChromeDriver...")
+        status_box.info("🚀 Initiating browser automation...")
+
+        # Use system chromedriver if available (preferred for Docker)
+        if os.path.exists("/usr/bin/chromedriver"):
+            service = ChromeService(executable_path="/usr/bin/chromedriver")
+        else:
+            service = ChromeService(ChromeDriverManager().install())
+
+        driver = webdriver.Chrome(service=service, options=options)
         print("[SCRAPER] ChromeDriver initialized")
         wait = WebDriverWait(driver, 15)
 
