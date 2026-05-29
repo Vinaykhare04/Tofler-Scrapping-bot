@@ -1,54 +1,16 @@
 import os
 import re
 import time
-import subprocess
-import sys
 import pandas as pd
 import streamlit as st
 from bs4 import BeautifulSoup
-from playwright.sync_api import sync_playwright
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.chrome.service import Service as ChromeService
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from webdriver_manager.chrome import ChromeDriverManager
 from openpyxl import load_workbook
-
-# --- PLAYWRIGHT BROWSER INITIALIZATION ---
-@st.cache_resource
-def ensure_browsers_installed():
-    """Install Playwright browsers on first run (Streamlit Cloud compatible)"""
-    try:
-        # Check common Playwright installation paths
-        browser_paths = [
-            os.path.expanduser("~/.cache/ms-playwright"),  # Linux
-            os.path.expanduser("~/AppData/Local/ms-playwright"),  # Windows
-        ]
-        
-        browsers_exist = any(os.path.exists(path) for path in browser_paths)
-        
-        if not browsers_exist:
-            print("[INIT] Playwright browsers not found. Installing...")
-            result = subprocess.run(
-                [sys.executable, "-m", "playwright", "install", "chromium"],
-                capture_output=True,
-                text=True,
-                timeout=300
-            )
-            
-            if result.returncode == 0:
-                print("[INIT] ✅ Playwright browsers installed successfully!")
-                return True
-            else:
-                print(f"[INIT] ❌ Installation failed: {result.stderr}")
-                st.warning("⚠️ Playwright browser installation in progress. Please refresh the page in a moment.")
-                return False
-        else:
-            print("[INIT] ✅ Playwright browsers already installed")
-            return True
-            
-    except Exception as e:
-        print(f"[INIT] ERROR: {e}")
-        st.warning(f"⚠️ Browser initialization: {str(e)}")
-        return False
-
-# Ensure browsers are installed before app runs
-ensure_browsers_installed()
 
 # --- STYLING CONFIGURATIONS ---
 st.set_page_config(page_title="Tofler Intelligence Scraper & Parser Dashboard", layout="wide")
@@ -155,154 +117,139 @@ def parse_markdown_table_from_html(html_path):
     print(f"[PARSE_HTML] Parsing complete. Metadata: '{metadata_title[:30]}', Rows found: {len(table_rows)}")
     return metadata_title, table_rows
 
-# --- PLAYWRIGHT AUTOMATION WORKER (STREAMLIT CLOUD COMPATIBLE) ---
+# --- SELENIUM AUTOMATION WORKER ---
 def run_selenium_scraper(email, password, companies):
-    """Logs into Tofler using Playwright, iterates through company profiles, and dumps raw HTML payloads."""
+    """Logs into Tofler, iterates through company profiles, and dumps raw HTML payloads."""
     print(f"\n[SCRAPER] Starting scraper for {len(companies)} companies")
     print(f"[SCRAPER] Email: {email}")
     output_dir = os.path.join(os.getcwd(), "Raw extracted data")
     os.makedirs(output_dir, exist_ok=True)
     print(f"[SCRAPER] Output directory: {output_dir}")
 
+    options = webdriver.ChromeOptions()
+    options.add_argument("--headless")
+    options.add_argument("--start-maximized")
+    options.add_argument("--disable-notifications")
+
     status_box = st.empty()
     progress_bar = st.progress(0)
 
+    driver = None
     try:
-        print("[SCRAPER] Launching Playwright browser...")
-        status_box.info("🚀 Initiating browser automation connection pipeline...")
-        
-        with sync_playwright() as p:
-            # Launch browser with Streamlit Cloud compatible settings
-            browser = p.chromium.launch(
-                headless=True,
-                args=["--no-sandbox", "--disable-dev-shm-usage"]
+        print("[SCRAPER] Installing ChromeDriver...")
+        status_box.info("🚀 Initiating Chrome Driver automation connection pipeline...")
+        driver = webdriver.Chrome(service=ChromeService(ChromeDriverManager().install()), options=options)
+        print("[SCRAPER] ChromeDriver initialized")
+        wait = WebDriverWait(driver, 15)
+
+        print("[SCRAPER] Navigating to https://www.tofler.in/")
+        status_box.info("🔐 Accessing Tofler authentication gateway portal...")
+        driver.get("https://www.tofler.in/")
+
+        try:
+            login_link = wait.until(
+                EC.element_to_be_clickable((By.CSS_SELECTOR, "a[href='/login'].button.bg-main.text-white"))
             )
-            context = browser.new_context()
-            page = context.new_page()
-            
-            print("[SCRAPER] Browser initialized successfully")
+            print("[SCRAPER] Login link found, clicking...")
+            login_link.click()
+        except Exception as e:
+            print(f"[SCRAPER] ERROR finding login link: {e}")
+            raise
 
-            print("[SCRAPER] Navigating to https://www.tofler.in/")
-            status_box.info("🔐 Accessing Tofler authentication gateway portal...")
-            page.goto("https://www.tofler.in/", wait_until="domcontentloaded", timeout=30000)
+        try:
+            email_input = wait.until(EC.presence_of_element_located((By.ID, "email")))
+            password_input = wait.until(EC.presence_of_element_located((By.ID, "password")))
+            print("[SCRAPER] Email and password fields found")
+        except Exception as e:
+            print(f"[SCRAPER] ERROR finding email/password fields: {e}")
+            raise
 
+        email_input.clear()
+        email_input.send_keys(email)
+        password_input.clear()
+        password_input.send_keys(password)
+        print("[SCRAPER] Credentials entered")
+
+        try:
+            submit_button = wait.until(EC.presence_of_element_located((By.ID, "submitBtn")))
+            driver.execute_script("arguments[0].disabled = false; arguments[0].style.opacity = 1;", submit_button)
+            wait.until(EC.element_to_be_clickable((By.ID, "submitBtn")))
+            submit_button.click()
+            print("[SCRAPER] Login button clicked")
+        except Exception as e:
+            print(f"[SCRAPER] ERROR clicking submit button: {e}")
+            raise
+
+        try:
+            wait.until(EC.presence_of_element_located((By.ID, "searchbox")))
+            print("[SCRAPER] Login successful, searchbox found")
+            status_box.success("✅ Login session authorized successfully!")
+        except Exception as e:
+            print(f"[SCRAPER] ERROR: Login failed, searchbox not found: {e}")
+            raise
+
+        time.sleep(1)
+
+        # Process company array stack
+        for index, company in enumerate(companies):
+            print(f"\n[SCRAPER] Processing company {index + 1}/{len(companies)}: {company}")
+            status_box.info(f"🔍 Searching and navigating company file track: **{company}**")
             try:
-                print("[SCRAPER] Waiting for login link...")
-                page.wait_for_selector("a[href='/login'].button.bg-main.text-white", timeout=10000)
-                login_button = page.query_selector("a[href='/login'].button.bg-main.text-white")
-                print("[SCRAPER] Login link found, clicking...")
-                login_button.click()
-                page.wait_for_load_state("networkidle")
-            except Exception as e:
-                print(f"[SCRAPER] ERROR finding login link: {e}")
-                raise
+                driver.get("https://www.tofler.in/")
+                search_box = wait.until(EC.presence_of_element_located((By.ID, "searchbox")))
+                search_box.clear()
+                search_box.send_keys(company)
+                print(f"[SCRAPER] Company name entered in search: {company}")
 
-            try:
-                print("[SCRAPER] Waiting for email and password fields...")
-                page.wait_for_selector("#email", timeout=10000)
-                page.wait_for_selector("#password", timeout=10000)
-                print("[SCRAPER] Email and password fields found")
-            except Exception as e:
-                print(f"[SCRAPER] ERROR finding email/password fields: {e}")
-                raise
+                time.sleep(3)
 
-            page.fill("#email", email)
-            page.fill("#password", password)
-            print("[SCRAPER] Credentials entered")
+                dropdown_items_selector = ".ui-menu-item, .ui-autocomplete li a"
+                suggestions = driver.find_elements(By.CSS_SELECTOR, dropdown_items_selector)
+                print(f"[SCRAPER] Found {len(suggestions)} suggestions for '{company}'")
 
-            try:
-                print("[SCRAPER] Waiting for submit button...")
-                page.wait_for_selector("#submitBtn", timeout=10000)
-                submit_button = page.query_selector("#submitBtn")
-                print("[SCRAPER] Submit button found, clicking...")
-                submit_button.click()
-                page.wait_for_load_state("networkidle")
-                print("[SCRAPER] Login button clicked")
-            except Exception as e:
-                print(f"[SCRAPER] ERROR clicking submit button: {e}")
-                raise
+                if not suggestions:
+                    print(f"[SCRAPER] WARNING: No suggestions found for '{company}', skipping")
+                    st.warning(f"⚠️ No autocomplete indices matched for '{company}'. Skipping...")
+                    continue
 
-            try:
-                print("[SCRAPER] Verifying login success...")
-                page.wait_for_selector("#searchbox", timeout=15000)
-                print("[SCRAPER] Login successful, searchbox found")
-                status_box.success("✅ Login session authorized successfully!")
-            except Exception as e:
-                print(f"[SCRAPER] ERROR: Login failed, searchbox not found: {e}")
-                raise
+                first_suggestion = suggestions[0]
+                driver.execute_script("arguments[0].click();", first_suggestion)
+                print(f"[SCRAPER] Clicked first suggestion")
 
-            time.sleep(1)
+                wait.until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+                time.sleep(2)
 
-            # Process company array stack
-            for index, company in enumerate(companies):
-                print(f"\n[SCRAPER] Processing company {index + 1}/{len(companies)}: {company}")
-                status_box.info(f"🔍 Searching and navigating company file track: **{company}**")
-                try:
-                    page.goto("https://www.tofler.in/", wait_until="domcontentloaded", timeout=30000)
-                    page.wait_for_selector("#searchbox", timeout=10000)
-                    search_box = page.query_selector("#searchbox")
-                    search_box.fill("")
-                    search_box.type(company, delay=50)
-                    print(f"[SCRAPER] Company name entered in search: {company}")
+                current_url = driver.current_url
+                print(f"[SCRAPER] Current URL: {current_url}")
 
-                    time.sleep(3)
+                if "tofler.in/" in current_url and current_url.strip("/") == "https://www.tofler.in":
+                    print(f"[SCRAPER] WARNING: Still on home page for '{company}', skipping")
+                    st.warning(f"⚠️ Anchor translation block encountered for '{company}'. Skipping...")
+                    continue
 
-                    # Wait for suggestions to appear
-                    try:
-                        page.wait_for_selector(".ui-menu-item, .ui-autocomplete li a", timeout=5000)
-                        suggestions = page.query_selector_all(".ui-menu-item, .ui-autocomplete li a")
-                        print(f"[SCRAPER] Found {len(suggestions)} suggestions for '{company}'")
+                # Isolate target file naming rules
+                sanitized_name = re.sub(r"[^A-Za-z0-9 _\-]", "_", company).strip().replace(" ", "_")
+                raw_file_path = os.path.join(output_dir, f"{sanitized_name}.html")
+                print(f"[SCRAPER] Saving to: {raw_file_path}")
 
-                        if not suggestions:
-                            print(f"[SCRAPER] WARNING: No suggestions found for '{company}', skipping")
-                            st.warning(f"⚠️ No autocomplete indices matched for '{company}'. Skipping...")
-                            continue
+                with open(raw_file_path, "w", encoding="utf-8") as raw_file:
+                    raw_file.write(driver.page_source)
+                print(f"[SCRAPER] HTML saved successfully ({len(driver.page_source)} bytes)")
 
-                        # Click first suggestion
-                        first_suggestion = suggestions[0]
-                        first_suggestion.click()
-                        print(f"[SCRAPER] Clicked first suggestion")
+            except Exception as loop_err:
+                print(f"[SCRAPER] ERROR processing company '{company}': {type(loop_err).__name__} - {str(loop_err)}")
+                st.error(f"❌ Automation runtime disruption matching company profile '{company}': {str(loop_err)}")
 
-                        page.wait_for_load_state("networkidle")
-                        time.sleep(2)
-
-                        current_url = page.url
-                        print(f"[SCRAPER] Current URL: {current_url}")
-
-                        if "tofler.in/" in current_url and current_url.strip("/") == "https://www.tofler.in":
-                            print(f"[SCRAPER] WARNING: Still on home page for '{company}', skipping")
-                            st.warning(f"⚠️ Anchor translation block encountered for '{company}'. Skipping...")
-                            continue
-
-                        # Isolate target file naming rules
-                        sanitized_name = re.sub(r"[^A-Za-z0-9 _\-]", "_", company).strip().replace(" ", "_")
-                        raw_file_path = os.path.join(output_dir, f"{sanitized_name}.html")
-                        print(f"[SCRAPER] Saving to: {raw_file_path}")
-
-                        html_content = page.content()
-                        with open(raw_file_path, "w", encoding="utf-8") as raw_file:
-                            raw_file.write(html_content)
-                        print(f"[SCRAPER] HTML saved successfully ({len(html_content)} bytes)")
-
-                    except Exception as inner_err:
-                        print(f"[SCRAPER] Timeout waiting for suggestions: {str(inner_err)}")
-                        st.warning(f"⚠️ No suggestions found for '{company}'. Skipping...")
-                        continue
-
-                except Exception as loop_err:
-                    print(f"[SCRAPER] ERROR processing company '{company}': {type(loop_err).__name__} - {str(loop_err)}")
-                    st.error(f"❌ Automation runtime disruption matching company profile '{company}': {str(loop_err)}")
-
-                progress_bar.progress((index + 1) / len(companies))
-
-            browser.close()
+            progress_bar.progress((index + 1) / len(companies))
 
     except Exception as connection_error:
         print(f"[SCRAPER] CRITICAL ERROR: {type(connection_error).__name__} - {str(connection_error)}")
-        st.error(f"💥 Critical browser initialization failure: {str(connection_error)}")
+        st.error(f"💥 Critical driver architecture setup initialization failure: {str(connection_error)}")
     finally:
-        print("[SCRAPER] Cleaning up - browser session terminated")
+        print("[SCRAPER] Cleaning up - closing browser")
         status_box.success("-- Web automation execution thread terminated cleanly.")
+        if driver:
+            driver.quit()
         print("[SCRAPER] Browser closed successfully")
 
 # --- WORKBOOK COMPILE ENGINE ---
@@ -446,6 +393,8 @@ def delete_excel_report(report_path):
 # --- INTERACTIVE USER INTERFACE DESIGN ---
 # Detect theme and use appropriate logo
 
+
+
 st.title("📊 Tofler Financial Data Intelligence Harvester")
 
 st.markdown("Automate data gathering loops, clean messy markdown structures, and monitor corporate profiles smoothly.")
@@ -520,7 +469,7 @@ with setup_col:
             st.error("Input targets parsing constraints error: Target configuration stack empty.")
         else:
             print(f"[MAIN] Starting scraper with {len(target_companies_list)} companies...")
-            with st.spinner("Executing browser automation sequence tasks..."):
+            with st.spinner("Executing Selenium sequence tasks..."):
                 run_selenium_scraper(user_email, user_pass, target_companies_list)
 
             print("[MAIN] Scraper completed, starting compilation...")
